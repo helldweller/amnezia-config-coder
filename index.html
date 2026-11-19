@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Keys never leave the page: no network access except the pinned QR library. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>Amnezia Config Coder</title>
 <style>
   :root {
@@ -26,7 +28,7 @@
   [role=tab][aria-selected=true] { color: var(--fg); border-bottom-color: var(--accent); }
   [role=tab]:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
   main { max-width: 1100px; margin: 0 auto; padding: 8px 16px 24px; }
-  label { display: block; font-weight: 600; margin: 20px 0 6px; }
+  label, h2 { display: block; font-weight: 600; font-size: inherit; margin: 20px 0 6px; }
   textarea {
     width: 100%; min-height: 160px; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
     background: var(--card); color: var(--fg); font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -42,6 +44,9 @@
     background: var(--card); color: var(--fg); font: inherit; cursor: pointer;
   }
   .row button:hover { border-color: var(--accent); }
+  #qr-img { width: min(100%, 420px); margin: 0 auto; }
+  #qr-img svg { display: block; width: 100%; height: auto; border-radius: 8px; }
+  #qr-label { text-align: center; color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   footer { text-align: center; color: var(--muted); font-size: 13px; padding: 0 16px 24px; }
   footer a { color: inherit; }
 </style>
@@ -53,11 +58,16 @@
 </nav>
 <main>
   <section role="tabpanel" id="enc" aria-labelledby="tab-enc">
-    <label for="enc-in">Config JSON</label>
+    <label for="enc-in">Config JSON or AmneziaWG .conf</label>
     <textarea id="enc-in" class="big" spellcheck="false" placeholder='{"containers": [...], "hostName": "..."}'></textarea>
     <label for="enc-out">vpn:// key</label>
     <textarea id="enc-out" readonly></textarea>
     <div class="row"><span class="status" id="enc-status" role="status"></span><button data-copy="enc-out">Copy</button></div>
+    <div id="qr" hidden>
+      <h2 id="qr-title"></h2>
+      <div id="qr-img"></div>
+      <p id="qr-label"></p>
+    </div>
   </section>
   <section role="tabpanel" id="dec" aria-labelledby="tab-dec" hidden>
     <label for="dec-in">vpn:// key</label>
@@ -74,11 +84,14 @@
 // API keys put the signature 000000ff in place of the length and keep base64 padding; both decode the same way.
 const pipe = async (bytes, stream) =>
   new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+const isJson = s => /^\s*\{/.test(s); // Amnezia configs are objects; anything else is raw .conf text
+const fromB64 = s => Uint8Array.from(atob(s.replace(/[\s=]/g, '').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const toB64url = bytes =>
+  btoa(Array.from(bytes, b => String.fromCharCode(b)).join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
 async function decode(key) {
-  const b64 = key.trim().replace(/^vpn:\/\//i, '').replace(/[\s=]/g, '').replace(/-/g, '+').replace(/_/g, '/');
   let bytes;
-  try { bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); }
+  try { bytes = fromB64(key.trim().replace(/^vpn:\/\//i, '')); }
   catch { throw new Error('Not a vpn:// key: invalid base64'); }
   let text;
   try { text = new TextDecoder().decode(await pipe(bytes.subarray(4), new DecompressionStream('deflate'))); }
@@ -91,16 +104,27 @@ async function decode(key) {
 }
 
 async function encode(input) {
-  const text = /^\s*\{/.test(input) ? JSON.stringify(JSON.parse(input)) : input; // raw .conf text passes as is
-  const data = new TextEncoder().encode(text);
+  const data = new TextEncoder().encode(isJson(input) ? JSON.stringify(JSON.parse(input)) : input);
   const z = await pipe(data, new CompressionStream('deflate'));
   const out = new Uint8Array(4 + z.length);
   new DataView(out.buffer).setUint32(0, data.length);
   out.set(z, 4);
-  const b64 = btoa(Array.from(out, b => String.fromCharCode(b)).join(''));
-  return 'vpn://' + b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return 'vpn://' + toB64url(out);
+}
+
+// Port of qrCodeUtils::generateQrCodeImageSeries: the qCompress bytes are cut into 850-byte chunks,
+// each framed by QDataStream as int16 magic 1984, uint8 count, uint8 index, uint32 length + bytes, then base64url.
+function qrSeries(key) {
+  const bytes = fromB64(key.replace(/^vpn:\/\//i, '')), K = 850, count = Math.ceil(bytes.length / K);
+  return Array.from({ length: count }, (_, i) => {
+    const part = bytes.subarray(i * K, (i + 1) * K), chunk = new Uint8Array(8 + part.length), v = new DataView(chunk.buffer);
+    v.setInt16(0, 1984); v.setUint8(2, count); v.setUint8(3, i); v.setUint32(4, part.length);
+    chunk.set(part, 8);
+    return toB64url(chunk);
+  });
 }
 </script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js" integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k" crossorigin="anonymous"></script>
 <script>
 const $ = id => document.getElementById(id);
 const tabs = document.querySelectorAll('[role=tab]');
@@ -109,20 +133,50 @@ tabs.forEach(tab => tab.onclick = () => tabs.forEach(t => {
   $(t.getAttribute('aria-controls')).hidden = t !== tab;
 }));
 
-function live(inId, outId, statusId, fn) {
+function live(inId, outId, statusId, fn, render = () => {}) {
   let seq = 0;
   $(inId).oninput = async () => {
     const n = ++seq, input = $(inId).value, status = $(statusId);
-    const show = (out, msg, err) => {
-      if (n !== seq) return; // a newer keystroke already won
-      $(outId).value = out; status.textContent = msg; status.className = err ? 'status err' : 'status';
-    };
-    if (!input.trim()) return show('', '');
-    try { const out = await fn(input); show(out, `OK, ${out.length} chars`); }
-    catch (e) { show('', e.message, true); }
+    let out = '', msg = '', err = false;
+    if (input.trim()) {
+      try { out = await fn(input); msg = `OK, ${out.length} chars`; }
+      catch (e) { msg = e.message; err = true; }
+    }
+    if (n !== seq) return; // a newer keystroke already won
+    $(outId).value = out; status.textContent = msg; status.className = err ? 'status err' : 'status';
+    render(input, out);
   };
 }
-live('enc-in', 'enc-out', 'enc-status', encode);
+
+const qrSvg = text => {
+  qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8']; // here, so a failed CDN load only breaks QR
+  const qr = qrcode(0, 'L'); // same ECC level as the app
+  qr.addData(text);
+  qr.make();
+  return qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true });
+};
+let qrTimer;
+function renderQr(input, key) {
+  clearInterval(qrTimer);
+  $('qr').hidden = !key;
+  if (!key) return;
+  // AmneziaVPN scans a chunk series of the key; AmneziaWG/WireGuard apps scan the plain .conf text.
+  const json = isJson(input);
+  $('qr-title').textContent = json ? 'QR for AmneziaVPN' : 'QR for AmneziaWG / WireGuard';
+  let svgs;
+  try { svgs = (json ? qrSeries(key) : [input]).map(qrSvg); }
+  catch (e) { $('qr-img').innerHTML = ''; $('qr-label').textContent = `No QR: ${e.message || e}`; return; }
+  let i = 0;
+  const step = () => {
+    $('qr-img').innerHTML = svgs[i];
+    $('qr-label').textContent = svgs.length > 1 ? `Code ${i + 1} of ${svgs.length}, scan until the app collects all` : '';
+    i = (i + 1) % svgs.length;
+  };
+  step();
+  if (svgs.length > 1) qrTimer = setInterval(step, 1000); // same interval as the app
+}
+
+live('enc-in', 'enc-out', 'enc-status', encode, renderQr);
 live('dec-in', 'dec-out', 'dec-status', decode);
 
 document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-const { encode, decode } = new Function(html.match(/<script id="core">([\s\S]*?)<\/script>/)[1] + 'return { encode, decode };')();
+const { encode, decode, qrSeries } = new Function(html.match(/<script id="core">([\s\S]*?)<\/script>/)[1] + 'return { encode, decode, qrSeries };')();
 
 const cfg = {"containers": [{"awg": {"last_config": "{\"H1\": \"1\", \"Jc\": \"4\", \"config\": \"[Interface]\\nPrivateKey = FAKE\\n\"}", "port": "51820", "transport_proto": "udp"}, "container": "amnezia-awg"}], "defaultContainer": "amnezia-awg", "description": "Тест", "dns1": "1.1.1.1", "hostName": "203.0.113.1"};
 
@@ -25,4 +25,18 @@ assert.equal(await decode(await encode('[Interface]\nAddress = 10.0.0.2/32\n')),
 await assert.rejects(decode('vpn://!!!'), /invalid base64/);
 await assert.rejects(decode('vpn://AAAA_3icxx'), /neither zlib nor text/);
 await assert.rejects(encode('{bad json'));
+
+// QR series: random payload so the compressed key spans several 850-byte chunks.
+const { randomBytes } = await import('node:crypto');
+const bigKey = await encode(JSON.stringify({ ...cfg, junk: randomBytes(2000).toString('base64') }));
+const chunks = qrSeries(bigKey).map(c => Buffer.from(c, 'base64url'));
+const bytes = Buffer.from(bigKey.slice(6), 'base64url');
+assert.equal(chunks.length, Math.ceil(bytes.length / 850));
+chunks.forEach((c, i) => {
+  assert.equal(c.readInt16BE(0), 1984, 'magic');
+  assert.equal(c[2], chunks.length, 'count');
+  assert.equal(c[3], i, 'index');
+  assert.equal(c.readUInt32BE(4), c.length - 8, 'QByteArray length');
+});
+assert.deepEqual(Buffer.concat(chunks.map(c => c.subarray(8))), bytes, 'chunks reassemble into the key bytes');
 console.log('ok');
