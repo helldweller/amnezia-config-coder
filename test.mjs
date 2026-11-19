@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-const { encode, decode, qrSeries } = new Function(html.match(/<script id="core">([\s\S]*?)<\/script>/)[1] + 'return { encode, decode, qrSeries };')();
+const { encode, decode, qrSeries, wgConf } = new Function(html.match(/<script id="core">([\s\S]*?)<\/script>/)[1] + 'return { encode, decode, qrSeries, wgConf };')();
 
 const cfg = {"containers": [{"awg": {"last_config": "{\"H1\": \"1\", \"Jc\": \"4\", \"config\": \"[Interface]\\nPrivateKey = FAKE\\n\"}", "port": "51820", "transport_proto": "udp"}, "container": "amnezia-awg"}], "defaultContainer": "amnezia-awg", "description": "Тест", "dns1": "1.1.1.1", "hostName": "203.0.113.1"};
 
@@ -25,6 +25,19 @@ assert.equal(await decode(await encode('[Interface]\nAddress = 10.0.0.2/32\n')),
 await assert.rejects(decode('vpn://!!!'), /invalid base64/);
 await assert.rejects(decode('vpn://AAAA_3icxx'), /neither zlib nor text/);
 await assert.rejects(encode('{bad json'));
+await assert.rejects(encode(fixtures.qt), /already a vpn:\/\/ key/);
+
+// WireGuard .conf from the container, DNS placeholders filled like the app's export.
+const tpl = '[Interface]\nDNS = $PRIMARY_DNS, $SECONDARY_DNS\nPrivateKey = FAKE\n';
+const proto = conf => ({ last_config: JSON.stringify({ config: conf, hostName: '203.0.113.1' }) });
+const two = { defaultContainer: 'amnezia-awg', dns1: '9.9.9.9', dns2: '149.112.112.112', containers: [
+  { container: 'amnezia-wireguard', wireguard: proto('[Interface]\nPrivateKey = WG\n') },
+  { container: 'amnezia-awg', awg: proto(tpl) },
+] };
+assert.equal(wgConf(JSON.stringify(two)), '[Interface]\nDNS = 9.9.9.9, 149.112.112.112\nPrivateKey = FAKE\n', 'default container, DNS filled');
+assert.equal(wgConf(JSON.stringify({ containers: [{ container: 'amnezia-awg', awg: proto(tpl) }] })), '[Interface]\nDNS = 1.1.1.1, 1.0.0.1\nPrivateKey = FAKE\n', 'app default DNS');
+assert.equal(wgConf(JSON.stringify({ containers: [{ container: 'amnezia-awg', awg: { port: '1' } }] })), '', 'no client config');
+assert.equal(wgConf('[Interface]\nPrivateKey = X\n'), '[Interface]\nPrivateKey = X\n', 'raw .conf passes through');
 
 // QR series: random payload so the compressed key spans several 850-byte chunks.
 const { randomBytes } = await import('node:crypto');

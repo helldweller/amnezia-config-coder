@@ -44,37 +44,40 @@
     background: var(--card); color: var(--fg); font: inherit; cursor: pointer;
   }
   .row button:hover { border-color: var(--accent); }
-  #qr-img { width: min(100%, 420px); margin: 0 auto; }
-  #qr-img svg { display: block; width: 100%; height: auto; border-radius: 8px; }
-  #qr-label { text-align: center; color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .qr-img { width: min(100%, 420px); margin: 0 auto; }
+  .qr-img svg { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .qr-label { text-align: center; color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   footer { text-align: center; color: var(--muted); font-size: 13px; padding: 0 16px 24px; }
   footer a { color: inherit; }
 </style>
 </head>
 <body>
 <nav role="tablist">
-  <button role="tab" id="tab-enc" aria-controls="enc" aria-selected="true">Encoder</button>
-  <button role="tab" id="tab-dec" aria-controls="dec" aria-selected="false">Decoder</button>
+  <button role="tab" id="tab-dec" aria-controls="dec" aria-selected="true">Decoder</button>
+  <button role="tab" id="tab-enc" aria-controls="enc" aria-selected="false">Encoder</button>
 </nav>
 <main>
-  <section role="tabpanel" id="enc" aria-labelledby="tab-enc">
-    <label for="enc-in">Config JSON or AmneziaWG .conf</label>
-    <textarea id="enc-in" class="big" spellcheck="false" placeholder='{"containers": [...], "hostName": "..."}'></textarea>
-    <label for="enc-out">vpn:// key</label>
-    <textarea id="enc-out" readonly></textarea>
-    <div class="row"><span class="status" id="enc-status" role="status"></span><button data-copy="enc-out">Copy</button></div>
-    <div id="qr" hidden>
-      <h2 id="qr-title"></h2>
-      <div id="qr-img"></div>
-      <p id="qr-label"></p>
-    </div>
-  </section>
-  <section role="tabpanel" id="dec" aria-labelledby="tab-dec" hidden>
+  <section role="tabpanel" id="dec" aria-labelledby="tab-dec">
     <label for="dec-in">vpn:// key</label>
     <textarea id="dec-in" spellcheck="false" placeholder="vpn://..."></textarea>
     <label for="dec-out">Config JSON</label>
     <textarea id="dec-out" class="big" readonly></textarea>
     <div class="row"><span class="status" id="dec-status" role="status"></span><button data-copy="dec-out">Copy</button></div>
+    <div class="qr" id="dec-qr" hidden><h2></h2><div class="qr-img"></div><p class="qr-label"></p></div>
+    <div id="dec-wg" hidden>
+      <label for="dec-conf">WireGuard / AmneziaWG config</label>
+      <textarea id="dec-conf" class="big" readonly></textarea>
+      <div class="row"><span></span><span><button data-copy="dec-conf">Copy</button> <button id="dec-download">Download .conf</button></span></div>
+      <div class="qr" id="dec-wg-qr" hidden><h2></h2><div class="qr-img"></div><p class="qr-label"></p></div>
+    </div>
+  </section>
+  <section role="tabpanel" id="enc" aria-labelledby="tab-enc" hidden>
+    <label for="enc-in">Config JSON or AmneziaWG .conf</label>
+    <textarea id="enc-in" class="big" spellcheck="false" placeholder='{"containers": [...], "hostName": "..."}'></textarea>
+    <label for="enc-out">vpn:// key</label>
+    <textarea id="enc-out" readonly></textarea>
+    <div class="row"><span class="status" id="enc-status" role="status"></span><button data-copy="enc-out">Copy</button></div>
+    <div class="qr" id="enc-qr" hidden><h2></h2><div class="qr-img"></div><p class="qr-label"></p></div>
   </section>
 </main>
 <footer>Runs entirely in your browser, nothing is sent anywhere. <a href="https://github.com/helldweller/amnezia-config-coder">Source</a></footer>
@@ -88,10 +91,11 @@ const isJson = s => /^\s*\{/.test(s); // Amnezia configs are objects; anything e
 const fromB64 = s => Uint8Array.from(atob(s.replace(/[\s=]/g, '').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const toB64url = bytes =>
   btoa(Array.from(bytes, b => String.fromCharCode(b)).join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const stripScheme = key => key.trim().replace(/^vpn:\/\//i, '');
 
 async function decode(key) {
   let bytes;
-  try { bytes = fromB64(key.trim().replace(/^vpn:\/\//i, '')); }
+  try { bytes = fromB64(stripScheme(key)); }
   catch { throw new Error('Not a vpn:// key: invalid base64'); }
   let text;
   try { text = new TextDecoder().decode(await pipe(bytes.subarray(4), new DecompressionStream('deflate'))); }
@@ -104,6 +108,7 @@ async function decode(key) {
 }
 
 async function encode(input) {
+  if (/^\s*vpn:\/\//i.test(input)) throw new Error('This is already a vpn:// key, paste it into Decoder');
   const data = new TextEncoder().encode(isJson(input) ? JSON.stringify(JSON.parse(input)) : input);
   const z = await pipe(data, new CompressionStream('deflate'));
   const out = new Uint8Array(4 + z.length);
@@ -115,13 +120,30 @@ async function encode(input) {
 // Port of qrCodeUtils::generateQrCodeImageSeries: the qCompress bytes are cut into 850-byte chunks,
 // each framed by QDataStream as int16 magic 1984, uint8 count, uint8 index, uint32 length + bytes, then base64url.
 function qrSeries(key) {
-  const bytes = fromB64(key.replace(/^vpn:\/\//i, '')), K = 850, count = Math.ceil(bytes.length / K);
+  const bytes = fromB64(stripScheme(key)), K = 850, count = Math.ceil(bytes.length / K);
   return Array.from({ length: count }, (_, i) => {
     const part = bytes.subarray(i * K, (i + 1) * K), chunk = new Uint8Array(8 + part.length), v = new DataView(chunk.buffer);
     v.setInt16(0, 1984); v.setUint8(2, count); v.setUint8(3, i); v.setUint32(4, part.length);
     chunk.set(part, 8);
     return toB64url(chunk);
   });
+}
+
+// The app keeps the client .conf in containers[].<protocol>.last_config (a JSON string) under "config",
+// with DNS left as $PRIMARY_DNS/$SECONDARY_DNS; export fills them from dns1/dns2 (app defaults otherwise).
+function wgConf(text) {
+  let cfg;
+  try { cfg = JSON.parse(text); } catch { return text.includes('[Interface]') ? text : ''; }
+  const rank = c => (c.container === cfg.defaultContainer ? 0 : 1);
+  for (const c of [...(cfg.containers || [])].sort((a, b) => rank(a) - rank(b))) {
+    for (const proto of Object.values(c)) {
+      let conf;
+      try { conf = JSON.parse(proto.last_config).config; } catch { continue; }
+      if (typeof conf === 'string' && conf.includes('[Interface]'))
+        return conf.replaceAll('$PRIMARY_DNS', cfg.dns1 || '1.1.1.1').replaceAll('$SECONDARY_DNS', cfg.dns2 || '1.0.0.1');
+    }
+  }
+  return '';
 }
 </script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js" integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k" crossorigin="anonymous"></script>
@@ -133,7 +155,7 @@ tabs.forEach(tab => tab.onclick = () => tabs.forEach(t => {
   $(t.getAttribute('aria-controls')).hidden = t !== tab;
 }));
 
-function live(inId, outId, statusId, fn, render = () => {}) {
+function live(inId, outId, statusId, fn, render) {
   let seq = 0;
   $(inId).oninput = async () => {
     const n = ++seq, input = $(inId).value, status = $(statusId);
@@ -155,35 +177,53 @@ const qrSvg = text => {
   qr.make();
   return qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true });
 };
-let qrTimer;
-function renderQr(input, key) {
-  clearInterval(qrTimer);
-  $('qr').hidden = !key;
-  if (!key) return;
-  // AmneziaVPN scans a chunk series of the key; AmneziaWG/WireGuard apps scan the plain .conf text.
-  const json = isJson(input);
-  $('qr-title').textContent = json ? 'QR for AmneziaVPN' : 'QR for AmneziaWG / WireGuard';
+// AmneziaVPN scans a chunk series of the key; AmneziaWG/WireGuard apps scan the plain .conf text.
+const VPN_QR = 'QR for AmneziaVPN', WG_QR = 'QR for AmneziaWG / WireGuard';
+function showQr(box, title, texts) {
+  clearInterval(box.timer);
+  box.hidden = !texts.length;
+  if (!texts.length) return;
+  const [h, img, label] = box.children;
+  h.textContent = title;
   let svgs;
-  try { svgs = (json ? qrSeries(key) : [input]).map(qrSvg); }
-  catch (e) { $('qr-img').innerHTML = ''; $('qr-label').textContent = `No QR: ${e.message || e}`; return; }
+  try { svgs = texts.map(qrSvg); }
+  catch (e) { img.innerHTML = ''; label.textContent = `No QR: ${e.message || e}`; return; }
   let i = 0;
   const step = () => {
-    $('qr-img').innerHTML = svgs[i];
-    $('qr-label').textContent = svgs.length > 1 ? `Code ${i + 1} of ${svgs.length}, scan until the app collects all` : '';
+    img.innerHTML = svgs[i];
+    label.textContent = svgs.length > 1 ? `Code ${i + 1} of ${svgs.length}, scan until the app collects all` : '';
     i = (i + 1) % svgs.length;
   };
   step();
-  if (svgs.length > 1) qrTimer = setInterval(step, 1000); // same interval as the app
+  if (svgs.length > 1) box.timer = setInterval(step, 1000); // same interval as the app
 }
 
-live('enc-in', 'enc-out', 'enc-status', encode, renderQr);
-live('dec-in', 'dec-out', 'dec-status', decode);
+live('dec-in', 'dec-out', 'dec-status', decode, (input, json) => {
+  showQr($('dec-qr'), VPN_QR, json ? qrSeries(input) : []);
+  const conf = json ? wgConf(json) : '';
+  $('dec-wg').hidden = !conf;
+  $('dec-conf').value = conf;
+  showQr($('dec-wg-qr'), WG_QR, conf ? [conf] : []);
+});
+live('enc-in', 'enc-out', 'enc-status', encode, (input, key) =>
+  showQr($('enc-qr'), isJson(input) ? VPN_QR : WG_QR, !key ? [] : isJson(input) ? qrSeries(key) : [input]));
 
 document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
   await navigator.clipboard.writeText($(b.dataset.copy).value);
   b.textContent = 'Copied';
   setTimeout(() => b.textContent = 'Copy', 1200);
 });
+
+$('dec-download').onclick = () => {
+  let cfg = {};
+  try { cfg = JSON.parse($('dec-out').value); } catch {}
+  // wg-quick takes the interface name from the file name: [a-zA-Z0-9_=+.-], 15 chars max.
+  const name = [cfg.description, cfg.hostName, 'amnezia'].map(s => String(s || '').replace(/[^\w=+.-]/g, '')).find(Boolean).slice(0, 15);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('dec-conf').value], { type: 'text/plain' }));
+  a.download = `${name}.conf`;
+  a.click();
+};
 </script>
 </body>
 </html>
