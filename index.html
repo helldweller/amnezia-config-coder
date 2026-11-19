@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amnezia Config Coder</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8; --fg: #1a1d21; --muted: #6b7280; --card: #fff;
+    --line: #d9dde3; --accent: #4f46e5; --err: #dc2626; --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e6e8eb; --muted: #9aa1ab; --card: #171a20;
+      --line: #2a2f38; --accent: #818cf8; --err: #f87171; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  [role=tablist] { display: flex; position: sticky; top: 0; z-index: 1; }
+  [role=tab] {
+    flex: 1; padding: 22px 16px; border: 0; border-bottom: 3px solid var(--line);
+    background: var(--card); color: var(--muted); font: 600 22px system-ui, sans-serif; cursor: pointer;
+  }
+  [role=tab][aria-selected=true] { color: var(--fg); border-bottom-color: var(--accent); }
+  [role=tab]:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 8px 16px 24px; }
+  label { display: block; font-weight: 600; margin: 20px 0 6px; }
+  textarea {
+    width: 100%; min-height: 160px; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--card); color: var(--fg); font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    resize: vertical; word-break: break-all;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  textarea.big { min-height: 360px; word-break: normal; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 8px; }
+  .status { font-size: 13px; color: var(--ok); }
+  .status.err { color: var(--err); }
+  .row button {
+    padding: 8px 18px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--card); color: var(--fg); font: inherit; cursor: pointer;
+  }
+  .row button:hover { border-color: var(--accent); }
+  footer { text-align: center; color: var(--muted); font-size: 13px; padding: 0 16px 24px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<nav role="tablist">
+  <button role="tab" id="tab-enc" aria-controls="enc" aria-selected="true">Encoder</button>
+  <button role="tab" id="tab-dec" aria-controls="dec" aria-selected="false">Decoder</button>
+</nav>
+<main>
+  <section role="tabpanel" id="enc" aria-labelledby="tab-enc">
+    <label for="enc-in">Config JSON</label>
+    <textarea id="enc-in" class="big" spellcheck="false" placeholder='{"containers": [...], "hostName": "..."}'></textarea>
+    <label for="enc-out">vpn:// key</label>
+    <textarea id="enc-out" readonly></textarea>
+    <div class="row"><span class="status" id="enc-status" role="status"></span><button data-copy="enc-out">Copy</button></div>
+  </section>
+  <section role="tabpanel" id="dec" aria-labelledby="tab-dec" hidden>
+    <label for="dec-in">vpn:// key</label>
+    <textarea id="dec-in" spellcheck="false" placeholder="vpn://..."></textarea>
+    <label for="dec-out">Config JSON</label>
+    <textarea id="dec-out" class="big" readonly></textarea>
+    <div class="row"><span class="status" id="dec-status" role="status"></span><button data-copy="dec-out">Copy</button></div>
+  </section>
+</main>
+<footer>Runs entirely in your browser, nothing is sent anywhere. <a href="https://github.com/helldweller/amnezia-config-coder">Source</a></footer>
+
+<script id="core">
+// vpn:// key = "vpn://" + base64url(qCompress(json)), qCompress = uint32 BE length + zlib stream.
+// API keys put the signature 000000ff in place of the length and keep base64 padding; both decode the same way.
+const pipe = async (bytes, stream) =>
+  new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+
+async function decode(key) {
+  const b64 = key.trim().replace(/^vpn:\/\//i, '').replace(/[\s=]/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  let bytes;
+  try { bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); }
+  catch { throw new Error('Not a vpn:// key: invalid base64'); }
+  let text;
+  try { text = new TextDecoder().decode(await pipe(bytes.subarray(4), new DecompressionStream('deflate'))); }
+  catch {
+    // The app also accepts uncompressed payloads.
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch { throw new Error('Not a vpn:// key: payload is neither zlib nor text'); }
+  }
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+}
+
+async function encode(input) {
+  const text = /^\s*\{/.test(input) ? JSON.stringify(JSON.parse(input)) : input; // raw .conf text passes as is
+  const data = new TextEncoder().encode(text);
+  const z = await pipe(data, new CompressionStream('deflate'));
+  const out = new Uint8Array(4 + z.length);
+  new DataView(out.buffer).setUint32(0, data.length);
+  out.set(z, 4);
+  const b64 = btoa(Array.from(out, b => String.fromCharCode(b)).join(''));
+  return 'vpn://' + b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+</script>
+<script>
+const $ = id => document.getElementById(id);
+const tabs = document.querySelectorAll('[role=tab]');
+tabs.forEach(tab => tab.onclick = () => tabs.forEach(t => {
+  t.setAttribute('aria-selected', t === tab);
+  $(t.getAttribute('aria-controls')).hidden = t !== tab;
+}));
+
+function live(inId, outId, statusId, fn) {
+  let seq = 0;
+  $(inId).oninput = async () => {
+    const n = ++seq, input = $(inId).value, status = $(statusId);
+    const show = (out, msg, err) => {
+      if (n !== seq) return; // a newer keystroke already won
+      $(outId).value = out; status.textContent = msg; status.className = err ? 'status err' : 'status';
+    };
+    if (!input.trim()) return show('', '');
+    try { const out = await fn(input); show(out, `OK, ${out.length} chars`); }
+    catch (e) { show('', e.message, true); }
+  };
+}
+live('enc-in', 'enc-out', 'enc-status', encode);
+live('dec-in', 'dec-out', 'dec-status', decode);
+
+document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+  await navigator.clipboard.writeText($(b.dataset.copy).value);
+  b.textContent = 'Copied';
+  setTimeout(() => b.textContent = 'Copy', 1200);
+});
+</script>
+</body>
+</html>
