@@ -28,6 +28,7 @@
   }
   [role=tab][aria-selected=true] { color: var(--fg); border-bottom-color: var(--accent); }
   [role=tab]:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+  @media (max-width: 600px) { [role=tab] { padding: 14px 6px; font-size: 16px; } }
   main { max-width: 1600px; margin: 0 auto; padding: 4px 16px 8px; }
   label, h2 { display: block; font-weight: 600; font-size: inherit; margin: 14px 0 6px; }
   textarea {
@@ -48,7 +49,16 @@
   .seg { display: flex; margin: 14px 0 6px; }
   .seg button { flex: 1; border-radius: 0; }
   .seg button:first-child { border-radius: 6px 0 0 6px; }
-  .seg button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; }
+  .seg button + button { border-left: 0; }
+  .head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+  button.small { padding: 2px 12px; font-size: 13px; margin-bottom: 5px; }
+  input, select {
+    display: block; width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--card); color: var(--fg); font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .note { color: var(--muted); font-size: 13px; margin: 14px 0 0; }
   .seg button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
   .seg button:disabled { color: var(--muted); cursor: default; }
   .qr-img { width: min(100%, 420px); margin: 0 auto; }
@@ -75,10 +85,11 @@
 <nav role="tablist">
   <button role="tab" id="tab-dec" aria-controls="dec" aria-selected="true">Decoder</button>
   <button role="tab" id="tab-enc" aria-controls="enc" aria-selected="false">Encoder</button>
+  <button role="tab" id="tab-gen" aria-controls="gen" aria-selected="false">I1 generator</button>
 </nav>
 <main>
   <section role="tabpanel" id="dec" aria-labelledby="tab-dec">
-    <label for="dec-in">vpn:// key</label>
+    <div class="head"><label for="dec-in">vpn:// key</label><button class="btn small" data-clear="dec-in">Clear</button></div>
     <textarea id="dec-in" rows="3" spellcheck="false" placeholder="vpn://..."></textarea>
     <div class="cols">
       <div class="col">
@@ -106,7 +117,7 @@
     <div class="cols">
       <div class="col">
         <div class="grow">
-          <label for="enc-in">Config JSON or AmneziaWG .conf</label>
+          <div class="head"><label for="enc-in">Config JSON or AmneziaWG .conf</label><button class="btn small" data-clear="enc-in">Clear</button></div>
           <textarea id="enc-in" class="big" spellcheck="false" placeholder='{"containers": [...], "hostName": "..."}'></textarea>
         </div>
         <label for="enc-out">vpn:// key</label>
@@ -116,6 +127,36 @@
       <div class="col" id="enc-qr">
         <h2 id="enc-qr-title">QR code</h2>
         <p class="qr-label"></p><div class="qr-img"></div>
+      </div>
+    </div>
+  </section>
+  <section role="tabpanel" id="gen" aria-labelledby="tab-gen" hidden>
+    <div class="cols">
+      <div class="col">
+        <div class="seg" role="group" aria-label="Protocol to mimic">
+          <button class="btn" data-proto="quic" aria-pressed="true">QUIC</button>
+          <button class="btn" data-proto="stun" aria-pressed="false">STUN / WebRTC</button>
+          <button class="btn" data-proto="dns" aria-pressed="false">DNS</button>
+        </div>
+        <div data-for="quic">
+          <label for="gen-sni">SNI, the site name inside the TLS ClientHello</label>
+          <input id="gen-sni" value="www.google.com" spellcheck="false" autocomplete="off">
+        </div>
+        <div data-for="dns" hidden>
+          <label for="gen-domain">Domain to query</label>
+          <input id="gen-domain" value="google.com" spellcheck="false" autocomplete="off">
+          <label for="gen-type">Record type</label>
+          <select id="gen-type"><option>A</option><option>AAAA</option><option>HTTPS</option></select>
+        </div>
+        <p class="note" id="gen-note"></p>
+        <p class="note">Put the value into I1 in the AmneziaVPN client settings. When editing a config JSON, change both the I1 field of last_config and the I1 line of its config text.</p>
+      </div>
+      <div class="col">
+        <div class="grow">
+          <label for="gen-out">I1</label>
+          <textarea id="gen-out" class="big" readonly></textarea>
+          <div class="row"><span class="status" id="gen-status" role="status"></span><span><button class="btn" id="gen-new">Regenerate</button> <button class="btn" data-copy="gen-out">Copy</button></span></div>
+        </div>
       </div>
     </div>
   </section>
@@ -184,6 +225,95 @@ function wgConf(text) {
     }
   }
   return '';
+}
+
+// ---- I1 generator: a UDP payload sent before every handshake, written in AmneziaWG tag syntax. ----
+const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+const cat = (...parts) => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  parts.reduce((offset, p) => (out.set(p, offset), offset + p.length), 0);
+  return out;
+};
+const u8 = (...bytes) => new Uint8Array(bytes);
+const u16 = n => u8(n >> 8, n & 255);
+const ascii = s => new TextEncoder().encode(s);
+const vec8 = b => cat(u8(b.length), b), vec16 = b => cat(u16(b.length), b);
+const varint = n => (n < 64 ? u8(n) : n < 16384 ? u16(0x4000 | n) : u8(0x80 | n >>> 24, n >> 16 & 255, n >> 8 & 255, n & 255));
+
+// Byte size of an I1 value once its tags are expanded.
+const i1Size = i1 => [...i1.matchAll(/<(\w+) ?([^>]*)>/g)]
+  .reduce((n, [, tag, arg]) => n + (tag === 'b' ? (arg.length - 2) / 2 : tag === 't' ? 4 : +arg), 0);
+
+function hostname(input) {
+  let h = '';
+  try { h = new URL(`http://${input.trim()}`).hostname; } catch {} // lowercases and punycodes IDN
+  const label = '(?!-)[a-z0-9-]{1,63}(?<!-)';
+  if (h.length > 253 || /^[\d.]+$/.test(h) || !new RegExp(`^${label}(\\.${label})+$`).test(h)) throw new Error('Enter a domain like example.com');
+  return h;
+}
+
+// DNS query as an OS resolver sends it: random ID, recursion desired, one question, EDNS0 OPT record (UDP size 1232).
+function i1Dns(domain, type) {
+  const qname = cat(...hostname(domain).split('.').map(l => vec8(ascii(l))), u8(0));
+  const qtype = { A: 1, AAAA: 28, HTTPS: 65 }[type];
+  return `<r 2><b 0x${hex(cat(u8(1, 0, 0, 1, 0, 0, 0, 0, 0, 1), qname, u16(qtype), u16(1), u8(0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0)))}>`;
+}
+
+// STUN Binding Request (RFC 8489) as browsers send it to STUN servers: magic cookie and a random 12-byte transaction ID.
+const i1Stun = () => '<b 0x000100002112a442><r 12>';
+
+// QUIC v1 keys (RFC 9001 §5.2): HKDF-Extract with the v1 salt, then HKDF-Expand-Label; each output fits one HMAC block.
+const QUIC_SALT = u8(0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a);
+const hmac = async (key, data) =>
+  new Uint8Array(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), data));
+const expandLabel = async (secret, label, len) => (await hmac(secret, cat(u16(len), vec8(ascii(`tls13 ${label}`)), u8(0, 1)))).subarray(0, len);
+async function quicKeys(dcid) {
+  const client = await expandLabel(await hmac(QUIC_SALT, dcid), 'client in', 32);
+  return { key: await expandLabel(client, 'quic key', 16), iv: await expandLabel(client, 'quic iv', 12), hp: await expandLabel(client, 'quic hp', 16) };
+}
+
+// QUIC v1 client Initial carrying a TLS 1.3 ClientHello for `sni`, padded to 1250 bytes like Chrome. It is really
+// encrypted, so DPI that decrypts Initials sees a valid handshake. Tags cannot re-encrypt it per handshake,
+// so its bytes are fixed: generate a separate one per server.
+async function i1Quic(sni) {
+  const random = n => crypto.getRandomValues(new Uint8Array(n));
+  const ext = (type, body) => cat(u16(type), vec16(body));
+  const param = (id, value) => cat(varint(id), vec8(value)); // values stay under 64 bytes, so the length is a 1-byte varint
+  const keyShare = random(32);
+  keyShare[31] &= 0x7f; // x25519 public keys are below 2^255
+  const transport = cat(
+    param(0x01, varint(30000)), param(0x03, varint(1472)), param(0x04, varint(15728640)), param(0x05, varint(6291456)),
+    param(0x06, varint(6291456)), param(0x07, varint(6291456)), param(0x08, varint(100)), param(0x09, varint(103)),
+    param(0x0f, u8()), // initial_source_connection_id: empty, matching the empty SCID below
+  );
+  const hello = cat(u16(0x0303), random(32), u8(0), vec16(cat(u16(0x1301), u16(0x1302), u16(0x1303))), u8(1, 0), vec16(cat(
+    ext(0x0000, vec16(cat(u8(0), vec16(ascii(hostname(sni)))))),                          // server_name
+    ext(0x000a, vec16(cat(u16(0x001d), u16(0x0017), u16(0x0018)))),                      // supported_groups
+    ext(0x000d, vec16(cat(...[0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601].map(u16)))), // signature_algorithms
+    ext(0x0010, vec16(vec8(ascii('h3')))),                                               // ALPN
+    ext(0x002b, vec8(u16(0x0304))),                                                      // supported_versions: TLS 1.3
+    ext(0x002d, vec8(u8(1))),                                                            // psk_key_exchange_modes
+    ext(0x0033, vec16(cat(u16(0x001d), vec16(keyShare)))),                               // key_share: x25519
+    ext(0x0039, transport),                                                              // quic_transport_parameters
+  )));
+  const frame = cat(u8(6), varint(0), varint(hello.length + 4), u8(1, 0), u16(hello.length), hello); // CRYPTO frame
+  // 18-byte header (Initial, v1, 8-byte DCID, empty SCID and token, 2-byte length) + 1-byte packet number + payload + 16-byte tag = 1250.
+  const dcid = random(8), pn = 1;
+  const header = cat(u8(0xc0, 0, 0, 0, 1), vec8(dcid), u8(0, 0), u16(0x4000 | 1232), u8(pn));
+  const plain = new Uint8Array(1215); // zeros after the CRYPTO frame are PADDING frames
+  plain.set(frame);
+  const { key, iv, hp } = await quicKeys(dcid);
+  const nonce = iv.slice();
+  nonce[11] ^= pn;
+  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: header },
+    await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']), plain));
+  // Header protection: AES-ECB of the 16 bytes starting 4 after the packet number, done as one CBC block with a zero IV.
+  const mask = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: new Uint8Array(16) },
+    await crypto.subtle.importKey('raw', hp, 'AES-CBC', false, ['encrypt']), sealed.subarray(3, 19)));
+  const packet = cat(header, sealed);
+  packet[0] ^= mask[0] & 0x0f;
+  packet[header.length - 1] ^= mask[1];
+  return `<b 0x${hex(packet)}>`;
 }
 </script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js" integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k" crossorigin="anonymous"></script>
@@ -263,6 +393,47 @@ live('enc-in', 'enc-out', 'enc-status', encode, (input, key) => {
 });
 renderDecQr();
 showQr($('enc-qr'), []);
+
+document.querySelectorAll('[data-clear]').forEach(b => b.onclick = () => {
+  const field = $(b.dataset.clear);
+  field.value = '';
+  field.dispatchEvent(new Event('input'));
+  field.focus();
+});
+
+const GEN = {
+  quic: {
+    make: () => i1Quic($('gen-sni').value),
+    note: 'A real QUIC v1 Initial (1250 bytes, like Chrome) with a TLS ClientHello for this SNI, so DPI that decrypts Initials sees a valid handshake. Its bytes are fixed, so generate a separate one per server. Best with server port UDP 443.',
+  },
+  stun: {
+    make: async () => i1Stun(),
+    note: 'A STUN Binding Request (20 bytes), as browsers send to STUN servers before a call. The transaction ID is random on every handshake. Requests carry no addresses, so there is nothing to fill in. Best with server port UDP 3478.',
+  },
+  dns: {
+    make: async () => i1Dns($('gen-domain').value, $('gen-type').value),
+    note: 'A DNS query as an OS resolver sends it, with EDNS and a random ID on every handshake. Best with server port UDP 53, but many ISPs intercept port 53.',
+  },
+};
+let genProto = 'quic', genSeq = 0;
+async function generate() {
+  const n = ++genSeq, status = $('gen-status');
+  document.querySelectorAll('[data-proto]').forEach(b => b.setAttribute('aria-pressed', b.dataset.proto === genProto));
+  document.querySelectorAll('[data-for]').forEach(d => d.hidden = d.dataset.for !== genProto);
+  $('gen-note').textContent = GEN[genProto].note;
+  let out = '', msg = '', err = false;
+  try {
+    out = await GEN[genProto].make();
+    const size = i1Size(out);
+    msg = size > 1400 ? `${size} bytes, may fragment on small-MTU links` : `${size} bytes`;
+  } catch (e) { msg = e.message; err = true; }
+  if (n !== genSeq) return; // a newer input already won
+  $('gen-out').value = out; status.textContent = msg; status.className = err ? 'status err' : 'status';
+}
+document.querySelectorAll('[data-proto]').forEach(b => b.onclick = () => { genProto = b.dataset.proto; generate(); });
+['gen-sni', 'gen-domain', 'gen-type'].forEach(id => $(id).oninput = generate);
+$('gen-new').onclick = generate;
+generate();
 
 document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
   await navigator.clipboard.writeText($(b.dataset.copy).value);

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-const { encode, decode, qrSeries, wgConf } = new Function(html.match(/<script id="core">([\s\S]*?)<\/script>/)[1] + 'return { encode, decode, qrSeries, wgConf };')();
+const { encode, decode, qrSeries, wgConf, i1Size, i1Dns, i1Stun, i1Quic, quicKeys } = new Function(html.match(/<script id="core">([\s\S]*?)<\/script>/)[1] + 'return { encode, decode, qrSeries, wgConf, i1Size, i1Dns, i1Stun, i1Quic, quicKeys };')();
 
 const cfg = {"containers": [{"awg": {"last_config": "{\"H1\": \"1\", \"Jc\": \"4\", \"config\": \"[Interface]\\nPrivateKey = FAKE\\n\"}", "port": "51820", "transport_proto": "udp"}, "container": "amnezia-awg"}], "defaultContainer": "amnezia-awg", "description": "Тест", "dns1": "1.1.1.1", "hostName": "203.0.113.1"};
 
@@ -52,4 +52,34 @@ chunks.forEach((c, i) => {
   assert.equal(c.readUInt32BE(4), c.length - 8, 'QByteArray length');
 });
 assert.deepEqual(Buffer.concat(chunks.map(c => c.subarray(8))), bytes, 'chunks reassemble into the key bytes');
+// I1 generator.
+assert.equal(i1Dns('Google.com', 'A'), '<r 2><b 0x0100000100000000000106676f6f676c6503636f6d00000100010000290' + '4d0000000000000>', 'DNS query bytes');
+const idn = '0c' + Buffer.from('xn--e1afmkfd').toString('hex') + '08' + Buffer.from('xn--p1ai').toString('hex') + '00' + '0041';
+assert.ok(i1Dns('пример.рф', 'HTTPS').includes(idn), 'IDN goes out as punycode, HTTPS type 65');
+for (const bad of ['', '1.2.3.4', 'localhost', 'bad_name.com', '-a.com']) assert.throws(() => i1Dns(bad, 'A'), /Enter a domain/, bad);
+assert.equal(i1Size(i1Stun()), 20, 'STUN size');
+assert.equal(i1Size('<b 0x0102><r 10><rc 3><rd 2><t>'), 21, 'tag sizes');
+
+// QUIC: key schedule against the RFC 9001 Appendix A vector, then decrypt a generated Initial with node:crypto.
+const { createCipheriv, createDecipheriv } = await import('node:crypto');
+const rfc = await quicKeys(Buffer.from('8394c8f03e515708', 'hex'));
+assert.deepEqual([rfc.key, rfc.iv, rfc.hp].map(b => Buffer.from(b).toString('hex')),
+  ['1f369613dd76d5467730efcbe3b1a22d', 'fa044b2f42a3fd3b46fb255c', '9f50449e04a0e810283a1e9933adedd2'], 'RFC 9001 keys');
+const quic = await i1Quic('Example.org');
+const pkt = Buffer.from(quic.slice(5, -1), 'hex');
+assert.equal(pkt.length, 1250);
+assert.equal(i1Size(quic), 1250);
+const keys = await quicKeys(pkt.subarray(6, 14));
+const mask = createCipheriv('aes-128-ecb', Buffer.from(keys.hp), null).update(pkt.subarray(22, 38));
+const first = pkt[0] ^ (mask[0] & 0x0f), pn = pkt[18] ^ mask[1];
+assert.equal(first, 0xc0, 'Initial, 1-byte packet number');
+const nonce = Buffer.from(keys.iv);
+nonce[11] ^= pn;
+const gcm = createDecipheriv('aes-128-gcm', Buffer.from(keys.key), nonce);
+gcm.setAAD(Buffer.concat([Buffer.from([first]), pkt.subarray(1, 18), Buffer.from([pn])]));
+gcm.setAuthTag(pkt.subarray(1234));
+const plain = Buffer.concat([gcm.update(pkt.subarray(19, 1234)), gcm.final()]); // final() throws on a bad tag
+assert.equal(plain[0], 6, 'CRYPTO frame first');
+assert.ok(plain.includes(Buffer.from('example.org')), 'SNI inside the ClientHello');
+await assert.rejects(i1Quic('not a domain'), /Enter a domain/);
 console.log('ok');
