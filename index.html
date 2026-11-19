@@ -19,36 +19,56 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
   [role=tablist] { display: flex; position: sticky; top: 0; z-index: 1; }
   [role=tab] {
-    flex: 1; padding: 22px 16px; border: 0; border-bottom: 3px solid var(--line);
+    flex: 1; padding: 18px 16px; border: 0; border-bottom: 3px solid var(--line);
     background: var(--card); color: var(--muted); font: 600 22px system-ui, sans-serif; cursor: pointer;
   }
   [role=tab][aria-selected=true] { color: var(--fg); border-bottom-color: var(--accent); }
   [role=tab]:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
-  main { max-width: 1100px; margin: 0 auto; padding: 8px 16px 24px; }
-  label, h2 { display: block; font-weight: 600; font-size: inherit; margin: 20px 0 6px; }
+  main { max-width: 1600px; margin: 0 auto; padding: 4px 16px 8px; }
+  label, h2 { display: block; font-weight: 600; font-size: inherit; margin: 14px 0 6px; }
   textarea {
-    width: 100%; min-height: 160px; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
+    display: block; width: 100%; min-height: 100px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
     background: var(--card); color: var(--fg); font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
     resize: vertical; word-break: break-all;
   }
   textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  textarea.big { min-height: 360px; word-break: normal; }
+  textarea.big { min-height: 280px; word-break: normal; }
   .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 8px; }
   .status { font-size: 13px; color: var(--ok); }
   .status.err { color: var(--err); }
-  .row button {
-    padding: 8px 18px; border: 1px solid var(--line); border-radius: 6px;
+  button.btn {
+    padding: 7px 16px; border: 1px solid var(--line); border-radius: 6px;
     background: var(--card); color: var(--fg); font: inherit; cursor: pointer;
   }
-  .row button:hover { border-color: var(--accent); }
+  button.btn:hover:enabled { border-color: var(--accent); }
+  .seg { display: flex; margin: 14px 0 6px; }
+  .seg button { flex: 1; border-radius: 0; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+  .seg button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .seg button:disabled { color: var(--muted); cursor: default; }
   .qr-img { width: min(100%, 420px); margin: 0 auto; }
-  .qr-img svg { display: block; width: 100%; height: auto; border-radius: 8px; }
-  .qr-label { text-align: center; color: var(--muted); font-size: 13px; margin: 8px 0 0; }
-  footer { text-align: center; color: var(--muted); font-size: 13px; padding: 0 16px 24px; }
+  .qr-img svg { display: block; width: 100%; height: auto; shape-rendering: crispEdges; }
+  .qr-label { text-align: center; color: var(--muted); font-size: 13px; margin: 0 0 8px; min-height: 1.5em; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 16px 8px; }
   footer a { color: inherit; }
+
+  /* Desktop: the whole tab fits one screen, text on the left stretches, QR on the right scales to the space left. */
+  @media (min-width: 900px) {
+    body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+    main { flex: 1; min-height: 0; width: 100%; }
+    section { height: 100%; display: flex; flex-direction: column; }
+    .cols { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .col, .grow { display: flex; flex-direction: column; min-height: 0; }
+    .grow { flex: 1; }
+    .grow textarea { flex: 1; min-height: 80px; resize: none; }
+    .qr-img { flex: 1; min-height: 0; width: 100%; }
+    .qr-img svg { height: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -59,25 +79,45 @@
 <main>
   <section role="tabpanel" id="dec" aria-labelledby="tab-dec">
     <label for="dec-in">vpn:// key</label>
-    <textarea id="dec-in" spellcheck="false" placeholder="vpn://..."></textarea>
-    <label for="dec-out">Config JSON</label>
-    <textarea id="dec-out" class="big" readonly></textarea>
-    <div class="row"><span class="status" id="dec-status" role="status"></span><button data-copy="dec-out">Copy</button></div>
-    <div class="qr" id="dec-qr" hidden><h2></h2><div class="qr-img"></div><p class="qr-label"></p></div>
-    <div id="dec-wg" hidden>
-      <label for="dec-conf">WireGuard / AmneziaWG config</label>
-      <textarea id="dec-conf" class="big" readonly></textarea>
-      <div class="row"><span></span><span><button data-copy="dec-conf">Copy</button> <button id="dec-download">Download .conf</button></span></div>
-      <div class="qr" id="dec-wg-qr" hidden><h2></h2><div class="qr-img"></div><p class="qr-label"></p></div>
+    <textarea id="dec-in" rows="3" spellcheck="false" placeholder="vpn://..."></textarea>
+    <div class="cols">
+      <div class="col">
+        <div class="grow">
+          <label for="dec-out">Config JSON</label>
+          <textarea id="dec-out" class="big" readonly></textarea>
+          <div class="row"><span class="status" id="dec-status" role="status"></span><button class="btn" data-copy="dec-out">Copy</button></div>
+        </div>
+        <div class="grow" id="dec-wg" hidden>
+          <label for="dec-conf">WireGuard / AmneziaWG config</label>
+          <textarea id="dec-conf" class="big" readonly></textarea>
+          <div class="row"><span></span><span><button class="btn" data-copy="dec-conf">Copy</button> <button class="btn" id="dec-download">Download .conf</button></span></div>
+        </div>
+      </div>
+      <div class="col" id="dec-qr">
+        <div class="seg" role="group" aria-label="QR code for">
+          <button class="btn" data-mode="vpn" aria-pressed="true">AmneziaVPN</button>
+          <button class="btn" data-mode="wg" aria-pressed="false">AmneziaWG / WireGuard</button>
+        </div>
+        <p class="qr-label"></p><div class="qr-img"></div>
+      </div>
     </div>
   </section>
   <section role="tabpanel" id="enc" aria-labelledby="tab-enc" hidden>
-    <label for="enc-in">Config JSON or AmneziaWG .conf</label>
-    <textarea id="enc-in" class="big" spellcheck="false" placeholder='{"containers": [...], "hostName": "..."}'></textarea>
-    <label for="enc-out">vpn:// key</label>
-    <textarea id="enc-out" readonly></textarea>
-    <div class="row"><span class="status" id="enc-status" role="status"></span><button data-copy="enc-out">Copy</button></div>
-    <div class="qr" id="enc-qr" hidden><h2></h2><div class="qr-img"></div><p class="qr-label"></p></div>
+    <div class="cols">
+      <div class="col">
+        <div class="grow">
+          <label for="enc-in">Config JSON or AmneziaWG .conf</label>
+          <textarea id="enc-in" class="big" spellcheck="false" placeholder='{"containers": [...], "hostName": "..."}'></textarea>
+        </div>
+        <label for="enc-out">vpn:// key</label>
+        <textarea id="enc-out" readonly></textarea>
+        <div class="row"><span class="status" id="enc-status" role="status"></span><button class="btn" data-copy="enc-out">Copy</button></div>
+      </div>
+      <div class="col" id="enc-qr">
+        <h2 id="enc-qr-title">QR code</h2>
+        <p class="qr-label"></p><div class="qr-img"></div>
+      </div>
+    </div>
   </section>
 </main>
 <footer>Runs entirely in your browser, nothing is sent anywhere. <a href="https://github.com/helldweller/amnezia-config-coder">Source</a></footer>
@@ -175,19 +215,17 @@ const qrSvg = text => {
   const qr = qrcode(0, 'L'); // same ECC level as the app
   qr.addData(text);
   qr.make();
-  return qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true });
+  return qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true }).replace('xMinYMin', 'xMidYMin');
 };
-// AmneziaVPN scans a chunk series of the key; AmneziaWG/WireGuard apps scan the plain .conf text.
-const VPN_QR = 'QR for AmneziaVPN', WG_QR = 'QR for AmneziaWG / WireGuard';
-function showQr(box, title, texts) {
+function showQr(box, texts) {
   clearInterval(box.timer);
-  box.hidden = !texts.length;
+  const img = box.querySelector('.qr-img'), label = box.querySelector('.qr-label');
+  img.innerHTML = '';
+  label.textContent = texts.length ? '' : 'QR code appears here';
   if (!texts.length) return;
-  const [h, img, label] = box.children;
-  h.textContent = title;
   let svgs;
   try { svgs = texts.map(qrSvg); }
-  catch (e) { img.innerHTML = ''; label.textContent = `No QR: ${e.message || e}`; return; }
+  catch (e) { label.textContent = `No QR: ${e.message || e}`; return; }
   let i = 0;
   const step = () => {
     img.innerHTML = svgs[i];
@@ -198,15 +236,33 @@ function showQr(box, title, texts) {
   if (svgs.length > 1) box.timer = setInterval(step, 1000); // same interval as the app
 }
 
+// Decoder QR: AmneziaVPN scans a chunk series of the key, AmneziaWG/WireGuard apps scan the plain .conf text.
+const decQr = { vpn: [], wg: [], mode: 'vpn' };
+const segs = document.querySelectorAll('#dec-qr [data-mode]');
+function renderDecQr() {
+  if (!decQr.wg.length) decQr.mode = 'vpn';
+  segs.forEach(b => {
+    b.setAttribute('aria-pressed', b.dataset.mode === decQr.mode);
+    b.disabled = !decQr[b.dataset.mode].length;
+  });
+  showQr($('dec-qr'), decQr[decQr.mode]);
+}
+segs.forEach(b => b.onclick = () => { decQr.mode = b.dataset.mode; renderDecQr(); });
+
 live('dec-in', 'dec-out', 'dec-status', decode, (input, json) => {
-  showQr($('dec-qr'), VPN_QR, json ? qrSeries(input) : []);
   const conf = json ? wgConf(json) : '';
   $('dec-wg').hidden = !conf;
   $('dec-conf').value = conf;
-  showQr($('dec-wg-qr'), WG_QR, conf ? [conf] : []);
+  decQr.vpn = json ? qrSeries(input) : [];
+  decQr.wg = conf ? [conf] : [];
+  renderDecQr();
 });
-live('enc-in', 'enc-out', 'enc-status', encode, (input, key) =>
-  showQr($('enc-qr'), isJson(input) ? VPN_QR : WG_QR, !key ? [] : isJson(input) ? qrSeries(key) : [input]));
+live('enc-in', 'enc-out', 'enc-status', encode, (input, key) => {
+  $('enc-qr-title').textContent = !key ? 'QR code' : isJson(input) ? 'QR for AmneziaVPN' : 'QR for AmneziaWG / WireGuard';
+  showQr($('enc-qr'), !key ? [] : isJson(input) ? qrSeries(key) : [input]);
+});
+renderDecQr();
+showQr($('enc-qr'), []);
 
 document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
   await navigator.clipboard.writeText($(b.dataset.copy).value);
